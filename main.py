@@ -2,6 +2,7 @@ import os
 import requests
 import yfinance as yf
 import pandas as pd
+import xml.etree.ElementTree as ET
 from google import genai
 
 # ── 1. API設定（GitHub Secretsから安全に取得） ──
@@ -21,31 +22,15 @@ MY_PORTFOLIO = {
     "LUNR": {"shares": 10, "entry": 9.43}
 }
 
-# ── 3. 新規買い候補の監視リスト（米国株中心に拡充） ──
+# ── 3. 新規買い候補の監視リスト（米国株中心） ──
 WATCH_UNIVERSE = {
-    # 米国：大型AI・メガテック主力
-    "US_MEGA": [
-        "NVDA", "MSFT", "AAPL", "AMZN", "META", "GOOGL", "AVGO", "TSLA"
-    ],
-    # 米国：セキュリティ・SaaS・クラウド
-    "US_SAAS": [
-        "PLTR", "CRWD", "PANW", "NET", "SNOW", "MDB", "DDOG", "SHOP"
-    ],
-    # 米国：半導体・AIインフラ・電力
-    "US_HARDWARE_INFRA": [
-        "ARM", "MRVL", "VST"
-    ],
-    # 米国：高モメンタム・急成長・テーマ（フィンテック / 宇宙 / ヘルスケア）
-    "US_MOMENTUM": [
-        "APP", "ASTS", "COIN", "UBER", "HOOD", "RDDT", "RKLB", "LLY"
-    ],
-    # 日本株（参考監視）
-    "JP_REF": [
-        "8035.T", "6857.T", "8306.T"
-    ]
+    "US_MEGA": ["NVDA", "MSFT", "AAPL", "AMZN", "META", "GOOGL", "AVGO", "TSLA"],
+    "US_SAAS": ["PLTR", "CRWD", "PANW", "NET", "SNOW", "MDB", "DDOG", "SHOP"],
+    "US_HARDWARE_INFRA": ["ARM", "MRVL", "VST"],
+    "US_MOMENTUM": ["APP", "ASTS", "COIN", "UBER", "HOOD", "RDDT", "RKLB", "LLY"],
+    "JP_REF": ["8035.T", "6857.T", "8306.T"]
 }
 
-# 全監視銘柄を平坦なリストに展開
 ALL_WATCH_TICKERS = [t for group in WATCH_UNIVERSE.values() for t in group]
 
 
@@ -67,19 +52,78 @@ def send_line_message(text):
         print(f"LINE送信エラー: {e}")
 
 
-def analyze_with_gemini(ticker_symbol, fundamental_context=""):
-    """超短縮・要点のみ要約（トークン節約＆文字数圧縮）"""
+def get_sec_recent_filings(ticker_symbol):
+    """
+    SEC EDGAR公式RSSフィードから直近の適時開示（8-K, 10-Q, 10-K等）を取得
+    """
+    if ticker_symbol.endswith(".T"):
+        return ""
+    try:
+        url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={ticker_symbol}&type=&dateb=&owner=exclude&start=0&count=5&output=atom"
+        # SEC EDGARのAPI利用規約に準拠したUser-Agentヘッダー
+        headers = {"User-Agent": "PersonalTradingBot trader@example.com"}
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code != 200:
+            return ""
+
+        root = ET.fromstring(res.content)
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        entries = root.findall("atom:entry", ns)
+        
+        filings = []
+        for entry in entries[:2]:  # 直近2件の重要開示
+            title_node = entry.find("atom:title", ns)
+            updated_node = entry.find("atom:updated", ns)
+            if title_node is not None and title_node.text:
+                title = title_node.text.strip()
+                date_str = updated_node.text[:10] if updated_node is not None else ""
+                filings.append(f"[{date_str}] {title}")
+        
+        return "\n".join(filings)
+    except Exception:
+        return ""
+
+
+def get_stock_news(ticker_obj):
+    """yfinance経由で直近の金融ニュース・見出しを抽出"""
+    try:
+        news_list = getattr(ticker_obj, "news", [])
+        if not news_list:
+            return ""
+        headlines = []
+        for item in news_list[:3]:  # 直近3件のニュース
+            title = item.get("title", "")
+            publisher = item.get("publisher", "")
+            if title:
+                headlines.append(f"- {title} ({publisher})")
+        return "\n".join(headlines)
+    except Exception:
+        return ""
+
+
+def analyze_with_gemini(ticker_symbol, fundamental_context="", news_context="", sec_context=""):
+    """
+    SEC開示・直近ニュース・財務データを前提条件としてAIに流し込み超短縮要約
+    """
     if not GEMINI_API_KEY:
         return "AI未設定"
 
     prompt = f"""
-米国株スイングアナリストとして「{ticker_symbol}」の最新状況を要約。
-前提: {fundamental_context}
+あなたは米国株スイング専属アナリストです。銘柄「{ticker_symbol}」の最新状況を要約してください。
 
-条件:
+【前提データ（公式一次情報・直近報道）】
+{fundamental_context}
+
+[SEC公式開示(EDGAR)]
+{sec_context if sec_context else "特記なし"}
+
+[直近ニュース見出し]
+{news_context if news_context else "特記なし"}
+
+【出力条件】
 ・日本語50〜70文字厳守
 ・冒頭に【好調】【警戒】【中立】のいずれかを付与
-・直近決算と主要材料の核心のみ記述
+・開示やニュースから「株価・出来高変動の主因（好決算、契約、格付け、悪材料等）」を1行で要約
 """
     try:
         response = ai_client.models.generate_content(
@@ -92,7 +136,7 @@ def analyze_with_gemini(ticker_symbol, fundamental_context=""):
 
 
 def get_usdjpy_rate():
-    """ドル円レート取得"""
+    """ドル円為替レート自動取得"""
     try:
         usdjpy = yf.Ticker("USDJPY=X").history(period="5d")
         return round(usdjpy["Close"].iloc[-1], 1)
@@ -103,7 +147,6 @@ def get_usdjpy_rate():
 def run_trading_bot():
     usdjpy = get_usdjpy_rate()
 
-    # 円表記略縮ヘルパー（万単位表記で短縮）
     def to_jpy_str(usd_val):
         jpy = usd_val * usdjpy
         if abs(jpy) >= 10000:
@@ -112,12 +155,12 @@ def run_trading_bot():
 
     round_val = lambda t, val: round(val, 0 if t.endswith(".T") else 1)
 
-    # ── A. 地合いチェック（S&P500） ──
+    # ── A. 地合いチェック（SPY） ──
     spy = yf.Ticker("SPY").history(period="3mo")
     spy["SMA20"] = spy["Close"].rolling(20).mean()
     market_is_bullish = spy["Close"].iloc[-1] > spy["SMA20"].iloc[-1]
 
-    # ── B. 新規買い候補（米国株中心にスキャン） ──
+    # ── B. 新規買い候補（SEC開示 ＋ 直近ニュース注入） ──
     buy_candidates = []
     for ticker in ALL_WATCH_TICKERS:
         is_jp = ticker.endswith(".T")
@@ -150,11 +193,20 @@ def run_trading_bot():
 
                 try:
                     info = stock.info
-                    context = f"PER:{info.get('forwardPE', 'N/A')}, RevGrow:{info.get('revenueGrowth', 'N/A')}"
+                    fund_ctx = f"PER:{info.get('forwardPE', 'N/A')}, 業種:{info.get('sector', '不明')}"
                 except Exception:
-                    context = ""
+                    fund_ctx = ""
 
-                ai_summary = analyze_with_gemini(ticker, fundamental_context=context)
+                # ★ 新規追加: SEC一次開示と金融ニュースの同時取得
+                sec_ctx = get_sec_recent_filings(ticker)
+                news_ctx = get_stock_news(stock)
+
+                ai_summary = analyze_with_gemini(
+                    ticker,
+                    fundamental_context=fund_ctx,
+                    news_context=news_ctx,
+                    sec_context=sec_ctx
+                )
 
                 jpy_tag = f" ({to_jpy_str(close)})" if not is_jp else ""
                 buy_candidates.append(
@@ -214,17 +266,14 @@ def run_trading_bot():
     # ── D. メッセージ組み立て ──
     sections = []
 
-    # 1. 新規候補（最優先）
     if buy_candidates:
         sections.append("■ 注目米株（買い検討）\n" + "\n\n".join(buy_candidates))
     else:
         sections.append("■ 注目米株: 本日ブレイク条件合致なし")
 
-    # 2. 保有株アラート
     if hold_alerts:
         sections.append("■ 保有株アラート\n" + "\n\n".join(hold_alerts))
 
-    # 3. 合計サマリー（1行集約）
     if total_cost_usd > 0:
         total_pnl_usd = round(total_value_usd - total_cost_usd, 1)
         total_pnl_pct = round((total_pnl_usd / total_cost_usd) * 100, 1)
@@ -242,7 +291,7 @@ def run_trading_bot():
     full_message = header + "\n\n━━━━━━━━━━\n\n".join(sections)
 
     send_line_message(full_message)
-    print("✅ 拡張版LINE通知送信完了")
+    print("✅ 一次情報・ニュース連携済みのLINE通知送信完了")
 
 
 if __name__ == "__main__":
