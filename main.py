@@ -114,18 +114,19 @@ def get_stock_news(ticker_obj):
         return ""
 
 
+# main.py の analyze_with_gemini 関数内を以下のように調整
+
 def analyze_with_gemini(ticker_symbol, fundamental_context="", news_context="", sec_context=""):
-    """Gemini 1.5 Flashで開示・ニュースを踏まえた超短縮要約"""
     if not GEMINI_API_KEY:
         return "AI未設定"
 
     prompt = f"""
 あなたは米国株スイング専属アナリストです。銘柄「{ticker_symbol}」の最新状況を要約してください。
 
-【前提データ（公式一次情報・直近報道）】
+【前提データ】
 {fundamental_context}
 
-[SEC公式開示(EDGAR)]
+[SEC公式開示]
 {sec_context if sec_context else "特記なし"}
 
 [直近ニュース見出し]
@@ -134,16 +135,22 @@ def analyze_with_gemini(ticker_symbol, fundamental_context="", news_context="", 
 【出力条件】
 ・日本語50〜70文字厳守
 ・冒頭に【好調】【警戒】【中立】のいずれかを付与
-・開示やニュースから「株価・出来高変動の主因」を1行で要約
+・株価・出来高変動の主因を1行で要約
 """
-    try:
-        response = ai_client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt
-        )
-        return response.text.strip().replace("\n", " ")
-    except Exception as e:
-        return f"AI取得スキップ ({str(e)[:25]})"
+    # 複数の指定候補をフォールバック付きで試行
+    candidate_models = ["models/gemini-1.5-flash", "gemini-1.5-flash", "models/gemini-2.0-flash"]
+    
+    for mod in candidate_models:
+        try:
+            response = ai_client.models.generate_content(
+                model=mod,
+                contents=prompt
+            )
+            return response.text.strip().replace("\n", " ")
+        except Exception:
+            continue
+            
+    return "AI要約取得スキップ（APIモデル照合中）"
 
 
 def get_usdjpy_rate():
