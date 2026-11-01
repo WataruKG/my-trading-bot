@@ -1,0 +1,30 @@
+name: Daily Stock Analysis
+
+on:
+  schedule:
+    # 毎日 UTC 22:00（日本時間の朝 7:00）に自動実行
+    - cron: '0 22 * * *'
+  # 手動で即座にテスト実行できるボタンを有効化
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Pythonのセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 必要なライブラリをインストール
+        run: |
+          pip install yfinance google-genai requests pandas
+
+      - name: スクリプトを実行
+        env:
+          LINE_ACCESS_TOKEN: ${{ secrets.LINE_ACCESS_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python main.py
