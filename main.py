@@ -6,14 +6,14 @@ import xml.etree.ElementTree as ET
 import time
 from google import genai
 
-# ── 1. API設定（GitHub Secretsから安全に取得） ──
+# ── 1. API設定 ──
 LINE_ACCESS_TOKEN = os.environ.get("LINE_ACCESS_TOKEN")
 USER_ID = "U97e66f5d50a462734d78a10e3e66f77b"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ── 2. 保有銘柄リスト（手仕舞い・損切り監視） ──
+# ── 2. 保有銘柄リスト（手仕舞い監視） ──
 MY_PORTFOLIO = {
     "NFLX": {"shares": 2, "entry": 86.91},
     "AMD":  {"shares": 1, "entry": 105.92},
@@ -23,27 +23,43 @@ MY_PORTFOLIO = {
     "LUNR": {"shares": 10, "entry": 9.43}
 }
 
-# ── 3. 新規買い候補の監視リスト（米国株中心に拡充） ──
+# ── 3. 新規買い候補の監視リスト（米国株を中心に約60社へ大幅拡充） ──
 WATCH_UNIVERSE = {
-    # 米国：大型AI・メガテック主力
-    "US_MEGA": [
+    # メガキャップ・テック主力
+    "MEGA_TECH": [
         "NVDA", "MSFT", "AAPL", "AMZN", "META", "GOOGL", "AVGO", "TSLA"
     ],
-    # 米国：セキュリティ・SaaS・クラウド
-    "US_SAAS": [
-        "PLTR", "CRWD", "PANW", "NET", "SNOW", "MDB", "DDOG", "SHOP"
+    # AI・半導体・ハードウェア
+    "SEMI_HARD": [
+        "ARM", "MRVL", "TSM", "QCOM", "ASML", "MU", "SMCI", "AMD"
     ],
-    # 米国：半導体・AIインフラ・電力
-    "US_HARDWARE_INFRA": [
-        "ARM", "MRVL", "VST"
+    # サイバーセキュリティ・クラウド・SaaS
+    "CYBER_SAAS": [
+        "PLTR", "CRWD", "PANW", "NET", "SNOW", "MDB", "DDOG", "SHOP", "NOW", "FTNT", "ZS"
     ],
-    # 米国：高モメンタム・急成長・テーマ（フィンテック / 宇宙 / ヘルスケア）
-    "US_MOMENTUM": [
-        "APP", "ASTS", "COIN", "UBER", "HOOD", "RDDT", "RKLB", "LLY"
+    # AIインフラ・データセンター・電力・エネルギー
+    "AI_INFRA_POWER": [
+        "VST", "CEG", "GEV", "ETN", "VRT"
+    ],
+    # フィンテック・暗号資産関連・コマース
+    "FINTECH_COMMERCE": [
+        "COIN", "HOOD", "SQ", "PYPL", "MELI", "SE"
+    ],
+    # 防衛テック・宇宙・次世代モビリティ
+    "AEROSPACE_DEFENSE": [
+        "ASTS", "RKLB", "LMT", "NOC", "KTOS", "UBER"
+    ],
+    # 高急成長モメンタム・注目のIPO銘柄
+    "HIGH_MOMENTUM": [
+        "APP", "RDDT", "CAVA", "DUOL", "TEM", "HIMS"
+    ],
+    # ヘルスケア・バイオ（肥満症薬・医療機器）
+    "HEALTHCARE": [
+        "LLY", "NVO", "ISRG", "VRTX"
     ],
     # 日本株（参考監視）
     "JP_REF": [
-        "8035.T", "6857.T", "8306.T"
+        "8035.T", "6857.T", "8306.T", "9984.T"
     ]
 }
 
@@ -114,9 +130,8 @@ def get_stock_news(ticker_obj):
         return ""
 
 
-# main.py の analyze_with_gemini 関数内を以下のように調整
-
 def analyze_with_gemini(ticker_symbol, fundamental_context="", news_context="", sec_context=""):
+    """Geminiで開示・ニュースを踏まえた超短縮要約（フォールバック付き）"""
     if not GEMINI_API_KEY:
         return "AI未設定"
 
@@ -137,9 +152,8 @@ def analyze_with_gemini(ticker_symbol, fundamental_context="", news_context="", 
 ・冒頭に【好調】【警戒】【中立】のいずれかを付与
 ・株価・出来高変動の主因を1行で要約
 """
-    # 複数の指定候補をフォールバック付きで試行
-    candidate_models = ["models/gemini-1.5-flash", "gemini-1.5-flash", "models/gemini-2.0-flash"]
-    
+    # 認識されやすいモデル名を順次試行
+    candidate_models = ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-2.0-flash"]
     for mod in candidate_models:
         try:
             response = ai_client.models.generate_content(
@@ -149,8 +163,8 @@ def analyze_with_gemini(ticker_symbol, fundamental_context="", news_context="", 
             return response.text.strip().replace("\n", " ")
         except Exception:
             continue
-            
-    return "AI要約取得スキップ（APIモデル照合中）"
+
+    return "AI要約スキップ（照合中）"
 
 
 def get_usdjpy_rate():
@@ -196,14 +210,16 @@ def run_trading_bot():
         sma20 = round_val(ticker, latest["SMA20"])
         sma50 = round_val(ticker, latest["SMA50"])
 
+        # 上昇トレンド判定 ＋ 出来高急増（日本株1.15倍、米国株1.15倍で検知力向上）
         is_uptrend = (close > sma20) and (sma20 > sma50)
-        vol_surge = latest["Volume"] > (latest["Vol20"] * (1.15 if is_jp else 1.20))
+        vol_surge = latest["Volume"] > (latest["Vol20"] * 1.15)
 
         if is_uptrend and vol_surge:
             stop_loss = round_val(ticker, df["Low"].tail(20).min())
             risk = close - stop_loss
 
-            if risk > 0 and (risk / close) <= 0.08:
+            # リスク幅を最大10%まで許容（モメンタム株の除外防止）
+            if risk > 0 and (risk / close) <= 0.10:
                 target = round_val(ticker, close + (risk * 2.2))
                 cur = "" if is_jp else "$"
                 unit = "円" if is_jp else ""
@@ -231,10 +247,12 @@ def run_trading_bot():
                     f"・理由: 20日・50日線上、出来高急増\n"
                     f"・AI: {ai_summary}"
                 )
-                if len(buy_candidates) >= 3:
+
+                # 最大5社まで抽出
+                if len(buy_candidates) >= 5:
                     break
 
-    # ── C. 保有株の監視 ──
+    # ── C. 保有株の出口監視 ──
     hold_alerts = []
     total_cost_usd = 0.0
     total_value_usd = 0.0
@@ -281,22 +299,21 @@ def run_trading_bot():
     # ── D. 【第1便】新規株速報の送信 ──
     market_status = "※地合い良好" if market_is_bullish else "※全体地合い(SPY): 下落傾向（エントリー時は小ロット推奨）"
     new_stock_header = f"【米株・新規注目株速報】1$ = {usdjpy}円\n{market_status}\n\n"
-    
+
     if buy_candidates:
         new_stock_body = "\n\n".join(buy_candidates)
     else:
         new_stock_body = "本日テクニカル・出来高ブレイクを満たす新規銘柄はありませんでした。"
-        
+
     first_message = new_stock_header + new_stock_body
     send_line_message(first_message)
     print("✅ 【第1便】新規株速報 送信完了")
 
-    # メッセージの順序が入れ替わらないよう1秒待機
     time.sleep(1)
 
     # ── E. 【第2便】保有資産・手仕舞いアラートの送信 ──
     second_sections = []
-    
+
     if hold_alerts:
         second_sections.append("■ 要対応銘柄\n" + "\n\n".join(hold_alerts))
     else:
