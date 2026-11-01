@@ -23,8 +23,12 @@ MY_PORTFOLIO = {
     "LUNR": {"shares": 10, "entry": 9.43}
 }
 
-# ── 3. 新規買い候補の監視リスト（チャレンジング枠を含め約80社に大幅拡充） ──
+# ── 3. 新規買い候補の監視リスト（ロンジェビティ枠を新設・約90社体制） ──
 WATCH_UNIVERSE = {
+    # ロンジェビティ・抗老化・遺伝子編集・再生医療枠（★新規追加）
+    "US_LONGEVITY": [
+        "CRSP", "BEAM", "VKTX", "PRTA", "RGNX", "TNYA"
+    ],
     # チャレンジング枠：量子・次世代原子力(SMR)・超高成長ディープテック
     "US_DEEPTECH": [
         "OKLO", "SMR", "NNE", "IONQ", "RGTI", "QBTS", "PL", "ACHR", "BBAI"
@@ -244,8 +248,6 @@ def run_trading_bot():
                 )
 
                 jpy_tag = f" ({to_jpy_str(close)})" if not is_jp else ""
-                
-                # AI要約がある場合のみ行を追加（スキップ表示は完全カット）
                 ai_line = f"\n・AI: {ai_summary}" if ai_summary else ""
 
                 buy_candidates.append(
