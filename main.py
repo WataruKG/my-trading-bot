@@ -3,6 +3,7 @@ import requests
 import yfinance as yf
 import pandas as pd
 import xml.etree.ElementTree as ET
+import time
 from google import genai
 
 # ── 1. API設定（GitHub Secretsから安全に取得） ──
@@ -22,13 +23,28 @@ MY_PORTFOLIO = {
     "LUNR": {"shares": 10, "entry": 9.43}
 }
 
-# ── 3. 新規買い候補の監視リスト（米国株中心） ──
+# ── 3. 新規買い候補の監視リスト（米国株中心に拡充） ──
 WATCH_UNIVERSE = {
-    "US_MEGA": ["NVDA", "MSFT", "AAPL", "AMZN", "META", "GOOGL", "AVGO", "TSLA"],
-    "US_SAAS": ["PLTR", "CRWD", "PANW", "NET", "SNOW", "MDB", "DDOG", "SHOP"],
-    "US_HARDWARE_INFRA": ["ARM", "MRVL", "VST"],
-    "US_MOMENTUM": ["APP", "ASTS", "COIN", "UBER", "HOOD", "RDDT", "RKLB", "LLY"],
-    "JP_REF": ["8035.T", "6857.T", "8306.T"]
+    # 米国：大型AI・メガテック主力
+    "US_MEGA": [
+        "NVDA", "MSFT", "AAPL", "AMZN", "META", "GOOGL", "AVGO", "TSLA"
+    ],
+    # 米国：セキュリティ・SaaS・クラウド
+    "US_SAAS": [
+        "PLTR", "CRWD", "PANW", "NET", "SNOW", "MDB", "DDOG", "SHOP"
+    ],
+    # 米国：半導体・AIインフラ・電力
+    "US_HARDWARE_INFRA": [
+        "ARM", "MRVL", "VST"
+    ],
+    # 米国：高モメンタム・急成長・テーマ（フィンテック / 宇宙 / ヘルスケア）
+    "US_MOMENTUM": [
+        "APP", "ASTS", "COIN", "UBER", "HOOD", "RDDT", "RKLB", "LLY"
+    ],
+    # 日本株（参考監視）
+    "JP_REF": [
+        "8035.T", "6857.T", "8306.T"
+    ]
 }
 
 ALL_WATCH_TICKERS = [t for group in WATCH_UNIVERSE.values() for t in group]
@@ -53,14 +69,11 @@ def send_line_message(text):
 
 
 def get_sec_recent_filings(ticker_symbol):
-    """
-    SEC EDGAR公式RSSフィードから直近の適時開示（8-K, 10-Q, 10-K等）を取得
-    """
+    """SEC EDGAR公式RSSフィードから直近開示（8-K, 10-Q等）を取得"""
     if ticker_symbol.endswith(".T"):
         return ""
     try:
         url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={ticker_symbol}&type=&dateb=&owner=exclude&start=0&count=5&output=atom"
-        # SEC EDGARのAPI利用規約に準拠したUser-Agentヘッダー
         headers = {"User-Agent": "PersonalTradingBot trader@example.com"}
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code != 200:
@@ -69,16 +82,16 @@ def get_sec_recent_filings(ticker_symbol):
         root = ET.fromstring(res.content)
         ns = {"atom": "http://www.w3.org/2005/Atom"}
         entries = root.findall("atom:entry", ns)
-        
+
         filings = []
-        for entry in entries[:2]:  # 直近2件の重要開示
+        for entry in entries[:2]:
             title_node = entry.find("atom:title", ns)
             updated_node = entry.find("atom:updated", ns)
             if title_node is not None and title_node.text:
                 title = title_node.text.strip()
                 date_str = updated_node.text[:10] if updated_node is not None else ""
                 filings.append(f"[{date_str}] {title}")
-        
+
         return "\n".join(filings)
     except Exception:
         return ""
@@ -91,7 +104,7 @@ def get_stock_news(ticker_obj):
         if not news_list:
             return ""
         headlines = []
-        for item in news_list[:3]:  # 直近3件のニュース
+        for item in news_list[:3]:
             title = item.get("title", "")
             publisher = item.get("publisher", "")
             if title:
@@ -102,9 +115,7 @@ def get_stock_news(ticker_obj):
 
 
 def analyze_with_gemini(ticker_symbol, fundamental_context="", news_context="", sec_context=""):
-    """
-    SEC開示・直近ニュース・財務データを前提条件としてAIに流し込み超短縮要約
-    """
+    """Gemini 1.5 Flashで開示・ニュースを踏まえた超短縮要約"""
     if not GEMINI_API_KEY:
         return "AI未設定"
 
@@ -123,7 +134,7 @@ def analyze_with_gemini(ticker_symbol, fundamental_context="", news_context="", 
 【出力条件】
 ・日本語50〜70文字厳守
 ・冒頭に【好調】【警戒】【中立】のいずれかを付与
-・開示やニュースから「株価・出来高変動の主因（好決算、契約、格付け、悪材料等）」を1行で要約
+・開示やニュースから「株価・出来高変動の主因」を1行で要約
 """
     try:
         response = ai_client.models.generate_content(
@@ -132,7 +143,7 @@ def analyze_with_gemini(ticker_symbol, fundamental_context="", news_context="", 
         )
         return response.text.strip().replace("\n", " ")
     except Exception as e:
-        return f"AIエラー: {str(e)[:30]}"
+        return f"AI取得スキップ ({str(e)[:25]})"
 
 
 def get_usdjpy_rate():
@@ -155,12 +166,12 @@ def run_trading_bot():
 
     round_val = lambda t, val: round(val, 0 if t.endswith(".T") else 1)
 
-    # ── A. 地合いチェック（SPY） ──
+    # ── A. 地合いチェック（S&P500） ──
     spy = yf.Ticker("SPY").history(period="3mo")
     spy["SMA20"] = spy["Close"].rolling(20).mean()
     market_is_bullish = spy["Close"].iloc[-1] > spy["SMA20"].iloc[-1]
 
-    # ── B. 新規買い候補（SEC開示 ＋ 直近ニュース注入） ──
+    # ── B. 新規買い候補のスキャン ──
     buy_candidates = []
     for ticker in ALL_WATCH_TICKERS:
         is_jp = ticker.endswith(".T")
@@ -178,7 +189,6 @@ def run_trading_bot():
         sma20 = round_val(ticker, latest["SMA20"])
         sma50 = round_val(ticker, latest["SMA50"])
 
-        # トレンド判定
         is_uptrend = (close > sma20) and (sma20 > sma50)
         vol_surge = latest["Volume"] > (latest["Vol20"] * (1.15 if is_jp else 1.20))
 
@@ -197,7 +207,6 @@ def run_trading_bot():
                 except Exception:
                     fund_ctx = ""
 
-                # ★ 新規追加: SEC一次開示と金融ニュースの同時取得
                 sec_ctx = get_sec_recent_filings(ticker)
                 news_ctx = get_stock_news(stock)
 
@@ -212,12 +221,13 @@ def run_trading_bot():
                 buy_candidates.append(
                     f"🟢 {ticker}: {cur}{close}{unit}{jpy_tag}\n"
                     f"・目標: {cur}{target}{unit} / 撤退: {cur}{stop_loss}{unit}\n"
+                    f"・理由: 20日・50日線上、出来高急増\n"
                     f"・AI: {ai_summary}"
                 )
                 if len(buy_candidates) >= 3:
                     break
 
-    # ── C. 保有株の出口監視 ──
+    # ── C. 保有株の監視 ──
     hold_alerts = []
     total_cost_usd = 0.0
     total_value_usd = 0.0
@@ -247,14 +257,12 @@ def run_trading_bot():
 
         sign = "+" if diff >= 0 else ""
 
-        # 1. 損切り (-7.5%)
         if pnl_pct <= -7.5:
             hold_alerts.append(
                 f"🚨 {ticker} ({shares}株) 全売推奨\n"
                 f"・取得: ${cost} ({to_jpy_str(cost)}) ➔ 現在: ${value} ({to_jpy_str(value)})\n"
                 f"・損益: {sign}${diff} ({to_jpy_str(diff)}) [{sign}{pnl_pct}%]"
             )
-        # 2. 20日線割れ
         elif close < sma20:
             action = "利確検討" if pnl_pct > 0 else "手仕舞い"
             hold_alerts.append(
@@ -263,35 +271,43 @@ def run_trading_bot():
                 f"・損益: {sign}${diff} ({to_jpy_str(diff)}) [{sign}{pnl_pct}%]"
             )
 
-    # ── D. メッセージ組み立て ──
-    sections = []
-
+    # ── D. 【第1便】新規株速報の送信 ──
+    market_status = "※地合い良好" if market_is_bullish else "※全体地合い(SPY): 下落傾向（エントリー時は小ロット推奨）"
+    new_stock_header = f"【米株・新規注目株速報】1$ = {usdjpy}円\n{market_status}\n\n"
+    
     if buy_candidates:
-        sections.append("■ 注目米株（買い検討）\n" + "\n\n".join(buy_candidates))
+        new_stock_body = "\n\n".join(buy_candidates)
     else:
-        sections.append("■ 注目米株: 本日ブレイク条件合致なし")
+        new_stock_body = "本日テクニカル・出来高ブレイクを満たす新規銘柄はありませんでした。"
+        
+    first_message = new_stock_header + new_stock_body
+    send_line_message(first_message)
+    print("✅ 【第1便】新規株速報 送信完了")
 
+    # メッセージの順序が入れ替わらないよう1秒待機
+    time.sleep(1)
+
+    # ── E. 【第2便】保有資産・手仕舞いアラートの送信 ──
+    second_sections = []
+    
     if hold_alerts:
-        sections.append("■ 保有株アラート\n" + "\n\n".join(hold_alerts))
+        second_sections.append("■ 要対応銘柄\n" + "\n\n".join(hold_alerts))
+    else:
+        second_sections.append("■ 保有株: 現在手仕舞い条件に達している銘柄はありません。")
 
     if total_cost_usd > 0:
         total_pnl_usd = round(total_value_usd - total_cost_usd, 1)
         total_pnl_pct = round((total_pnl_usd / total_cost_usd) * 100, 1)
         sign = "+" if total_pnl_usd >= 0 else ""
-
-        warn_note = "\n※SPY下落中（新規買いは少額に限定推奨）" if not market_is_bullish else "\n※地合い良好"
         summary = (
             f"💰 総資産: ${total_value_usd:,.1f} ({to_jpy_str(total_value_usd)}) | "
             f"損益: {sign}${total_pnl_usd:,.1f} ({to_jpy_str(total_pnl_usd)}) [{sign}{total_pnl_pct}%]"
-            f"{warn_note}"
         )
-        sections.append(summary)
+        second_sections.append(summary)
 
-    header = f"【米株・資産速報】1$ = {usdjpy}円\n\n"
-    full_message = header + "\n\n━━━━━━━━━━\n\n".join(sections)
-
-    send_line_message(full_message)
-    print("✅ 一次情報・ニュース連携済みのLINE通知送信完了")
+    second_message = "【保有株・資産防衛アラート】\n\n" + "\n\n━━━━━━━━━━\n\n".join(second_sections)
+    send_line_message(second_message)
+    print("✅ 【第2便】保有株アラート 送信完了")
 
 
 if __name__ == "__main__":
