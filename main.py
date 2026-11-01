@@ -127,7 +127,7 @@ def analyze_with_gemini(ticker_symbol, fundamental_context="", news_context="", 
 """
     try:
         response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-1.5-flash",
             contents=prompt
         )
         return response.text.strip().replace("\n", " ")
