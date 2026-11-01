@@ -4,14 +4,14 @@ import yfinance as yf
 import pandas as pd
 from google import genai
 
-# ── 1. API設定 ──
+# ── 1. API設定（GitHub Secretsから安全に取得） ──
 LINE_ACCESS_TOKEN = os.environ.get("LINE_ACCESS_TOKEN")
 USER_ID = "U97e66f5d50a462734d78a10e3e66f77b"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ── 2. 保有銘柄リスト ──
+# ── 2. 保有銘柄リスト（手仕舞い・損切り監視） ──
 MY_PORTFOLIO = {
     "NFLX": {"shares": 2, "entry": 86.91},
     "AMD":  {"shares": 1, "entry": 105.92},
@@ -23,20 +23,34 @@ MY_PORTFOLIO = {
 
 # ── 3. 新規買い候補の監視リスト（米国株中心に拡充） ──
 WATCH_UNIVERSE = {
-    # 米国：大型AI・テック主力
-    "US_MEGA": ["NVDA", "MSFT", "AAPL", "AMZN", "META", "GOOGL", "AVGO", "TSLA"],
-    # 米国：セキュリティ・SaaS・データ
-    "US_SAAS": ["PLTR", "CRWD", "PANW", "NET", "SNOW", "MDB", "DDOG"],
-    # 米国：急成長モメンタム・テーマ
-    "US_MOMENTUM": ["APP", "ASTS", "COIN", "UBER", "HOOD", "RDDT"],
+    # 米国：大型AI・メガテック主力
+    "US_MEGA": [
+        "NVDA", "MSFT", "AAPL", "AMZN", "META", "GOOGL", "AVGO", "TSLA"
+    ],
+    # 米国：セキュリティ・SaaS・クラウド
+    "US_SAAS": [
+        "PLTR", "CRWD", "PANW", "NET", "SNOW", "MDB", "DDOG", "SHOP"
+    ],
+    # 米国：半導体・AIインフラ・電力
+    "US_HARDWARE_INFRA": [
+        "ARM", "MRVL", "VST"
+    ],
+    # 米国：高モメンタム・急成長・テーマ（フィンテック / 宇宙 / ヘルスケア）
+    "US_MOMENTUM": [
+        "APP", "ASTS", "COIN", "UBER", "HOOD", "RDDT", "RKLB", "LLY"
+    ],
     # 日本株（参考監視）
-    "JP_REF": ["8035.T", "6857.T", "8306.T"]
+    "JP_REF": [
+        "8035.T", "6857.T", "8306.T"
+    ]
 }
 
+# 全監視銘柄を平坦なリストに展開
 ALL_WATCH_TICKERS = [t for group in WATCH_UNIVERSE.values() for t in group]
 
 
 def send_line_message(text):
+    """LINE Messaging API経由で通知をプッシュ送信"""
     if not LINE_ACCESS_TOKEN:
         print("LINE_ACCESS_TOKEN未設定")
         return
@@ -78,6 +92,7 @@ def analyze_with_gemini(ticker_symbol, fundamental_context=""):
 
 
 def get_usdjpy_rate():
+    """ドル円レート取得"""
     try:
         usdjpy = yf.Ticker("USDJPY=X").history(period="5d")
         return round(usdjpy["Close"].iloc[-1], 1)
@@ -88,7 +103,7 @@ def get_usdjpy_rate():
 def run_trading_bot():
     usdjpy = get_usdjpy_rate()
 
-    # 円表記略縮ヘルパー（万単位表記で極小化）
+    # 円表記略縮ヘルパー（万単位表記で短縮）
     def to_jpy_str(usd_val):
         jpy = usd_val * usdjpy
         if abs(jpy) >= 10000:
@@ -97,7 +112,7 @@ def run_trading_bot():
 
     round_val = lambda t, val: round(val, 0 if t.endswith(".T") else 1)
 
-    # ── A. 地合いチェック（SPY） ──
+    # ── A. 地合いチェック（S&P500） ──
     spy = yf.Ticker("SPY").history(period="3mo")
     spy["SMA20"] = spy["Close"].rolling(20).mean()
     market_is_bullish = spy["Close"].iloc[-1] > spy["SMA20"].iloc[-1]
@@ -214,7 +229,7 @@ def run_trading_bot():
         total_pnl_usd = round(total_value_usd - total_cost_usd, 1)
         total_pnl_pct = round((total_pnl_usd / total_cost_usd) * 100, 1)
         sign = "+" if total_pnl_usd >= 0 else ""
-        
+
         warn_note = "\n※SPY下落中（新規買いは少額に限定推奨）" if not market_is_bullish else "\n※地合い良好"
         summary = (
             f"💰 総資産: ${total_value_usd:,.1f} ({to_jpy_str(total_value_usd)}) | "
@@ -225,9 +240,9 @@ def run_trading_bot():
 
     header = f"【米株・資産速報】1$ = {usdjpy}円\n\n"
     full_message = header + "\n\n━━━━━━━━━━\n\n".join(sections)
-    
+
     send_line_message(full_message)
-    print("✅ 圧縮版LINE通知送信完了")
+    print("✅ 拡張版LINE通知送信完了")
 
 
 if __name__ == "__main__":
