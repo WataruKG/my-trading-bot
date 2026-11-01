@@ -11,9 +11,9 @@ LINE_ACCESS_TOKEN = os.environ.get("LINE_ACCESS_TOKEN")
 USER_ID = "U97e66f5d50a462734d78a10e3e66f77b"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
+ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# ── 2. 保有銘柄リスト（手仕舞い監視） ──
+# ── 2. 保有銘柄リスト（手仕舞い・損切り監視） ──
 MY_PORTFOLIO = {
     "NFLX": {"shares": 2, "entry": 86.91},
     "AMD":  {"shares": 1, "entry": 105.92},
@@ -23,37 +23,37 @@ MY_PORTFOLIO = {
     "LUNR": {"shares": 10, "entry": 9.43}
 }
 
-# ── 3. 新規買い候補の監視リスト（米国株を中心に約60社へ大幅拡充） ──
+# ── 3. 新規買い候補の監視リスト（チャレンジング枠を含め約80社に大幅拡充） ──
 WATCH_UNIVERSE = {
-    # メガキャップ・テック主力
-    "MEGA_TECH": [
-        "NVDA", "MSFT", "AAPL", "AMZN", "META", "GOOGL", "AVGO", "TSLA"
+    # チャレンジング枠：量子・次世代原子力(SMR)・超高成長ディープテック
+    "US_DEEPTECH": [
+        "OKLO", "SMR", "NNE", "IONQ", "RGTI", "QBTS", "PL", "ACHR", "BBAI"
     ],
-    # AI・半導体・ハードウェア
-    "SEMI_HARD": [
-        "ARM", "MRVL", "TSM", "QCOM", "ASML", "MU", "SMCI", "AMD"
+    # チャレンジング枠：高ボラティリティ・リテール人気急成長株
+    "US_CHALLENGING": [
+        "SOFI", "AFRM", "UPST", "CVNA", "CLOV", "HIMS", "TEM", "CAVA", "DUOL"
     ],
-    # サイバーセキュリティ・クラウド・SaaS
-    "CYBER_SAAS": [
-        "PLTR", "CRWD", "PANW", "NET", "SNOW", "MDB", "DDOG", "SHOP", "NOW", "FTNT", "ZS"
+    # 高モメンタム・テーマ株（AIアプリ / 宇宙 / 暗号資産）
+    "US_MOMENTUM": [
+        "APP", "ASTS", "COIN", "HOOD", "RDDT", "RKLB", "UBER"
     ],
-    # AIインフラ・データセンター・電力・エネルギー
+    # AIインフラ・データセンター・電力
     "AI_INFRA_POWER": [
         "VST", "CEG", "GEV", "ETN", "VRT"
     ],
-    # フィンテック・暗号資産関連・コマース
-    "FINTECH_COMMERCE": [
-        "COIN", "HOOD", "SQ", "PYPL", "MELI", "SE"
+    # クラウド・セキュリティ・SaaS
+    "CYBER_SAAS": [
+        "PLTR", "CRWD", "PANW", "NET", "SNOW", "MDB", "DDOG", "SHOP", "NOW"
     ],
-    # 防衛テック・宇宙・次世代モビリティ
-    "AEROSPACE_DEFENSE": [
-        "ASTS", "RKLB", "LMT", "NOC", "KTOS", "UBER"
+    # 半導体・ハードウェア主力
+    "SEMI_HARD": [
+        "ARM", "MRVL", "TSM", "QCOM", "ASML", "MU", "SMCI"
     ],
-    # 高急成長モメンタム・注目のIPO銘柄
-    "HIGH_MOMENTUM": [
-        "APP", "RDDT", "CAVA", "DUOL", "TEM", "HIMS"
+    # メガキャップ主力
+    "MEGA_TECH": [
+        "NVDA", "MSFT", "AAPL", "AMZN", "META", "GOOGL", "AVGO", "TSLA"
     ],
-    # ヘルスケア・バイオ（肥満症薬・医療機器）
+    # ヘルスケア・バイオ高成長
     "HEALTHCARE": [
         "LLY", "NVO", "ISRG", "VRTX"
     ],
@@ -85,7 +85,7 @@ def send_line_message(text):
 
 
 def get_sec_recent_filings(ticker_symbol):
-    """SEC EDGAR公式RSSフィードから直近開示（8-K, 10-Q等）を取得"""
+    """SEC EDGAR公式RSSフィードから直近開示を取得"""
     if ticker_symbol.endswith(".T"):
         return ""
     try:
@@ -131,9 +131,11 @@ def get_stock_news(ticker_obj):
 
 
 def analyze_with_gemini(ticker_symbol, fundamental_context="", news_context="", sec_context=""):
-    """Geminiで開示・ニュースを踏まえた超短縮要約（フォールバック付き）"""
-    if not GEMINI_API_KEY:
-        return "AI未設定"
+    """
+    開示・ニュースから短縮要約を取得。取得失敗時は空文字を返し、通知に「スキップ」を表示させない。
+    """
+    if not ai_client:
+        return ""
 
     prompt = f"""
 あなたは米国株スイング専属アナリストです。銘柄「{ticker_symbol}」の最新状況を要約してください。
@@ -152,7 +154,6 @@ def analyze_with_gemini(ticker_symbol, fundamental_context="", news_context="", 
 ・冒頭に【好調】【警戒】【中立】のいずれかを付与
 ・株価・出来高変動の主因を1行で要約
 """
-    # 認識されやすいモデル名を順次試行
     candidate_models = ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-2.0-flash"]
     for mod in candidate_models:
         try:
@@ -160,11 +161,13 @@ def analyze_with_gemini(ticker_symbol, fundamental_context="", news_context="", 
                 model=mod,
                 contents=prompt
             )
-            return response.text.strip().replace("\n", " ")
+            text = response.text.strip().replace("\n", " ")
+            if text:
+                return text
         except Exception:
             continue
 
-    return "AI要約スキップ（照合中）"
+    return ""
 
 
 def get_usdjpy_rate():
@@ -210,7 +213,7 @@ def run_trading_bot():
         sma20 = round_val(ticker, latest["SMA20"])
         sma50 = round_val(ticker, latest["SMA50"])
 
-        # 上昇トレンド判定 ＋ 出来高急増（日本株1.15倍、米国株1.15倍で検知力向上）
+        # 上昇トレンド判定 ＋ 出来高急増（1.15倍）
         is_uptrend = (close > sma20) and (sma20 > sma50)
         vol_surge = latest["Volume"] > (latest["Vol20"] * 1.15)
 
@@ -218,7 +221,7 @@ def run_trading_bot():
             stop_loss = round_val(ticker, df["Low"].tail(20).min())
             risk = close - stop_loss
 
-            # リスク幅を最大10%まで許容（モメンタム株の除外防止）
+            # モメンタム・急成長株のボラティリティを考慮し10%以内を許容
             if risk > 0 and (risk / close) <= 0.10:
                 target = round_val(ticker, close + (risk * 2.2))
                 cur = "" if is_jp else "$"
@@ -241,15 +244,18 @@ def run_trading_bot():
                 )
 
                 jpy_tag = f" ({to_jpy_str(close)})" if not is_jp else ""
+                
+                # AI要約がある場合のみ行を追加（スキップ表示は完全カット）
+                ai_line = f"\n・AI: {ai_summary}" if ai_summary else ""
+
                 buy_candidates.append(
                     f"🟢 {ticker}: {cur}{close}{unit}{jpy_tag}\n"
                     f"・目標: {cur}{target}{unit} / 撤退: {cur}{stop_loss}{unit}\n"
-                    f"・理由: 20日・50日線上、出来高急増\n"
-                    f"・AI: {ai_summary}"
+                    f"・理由: 20日・50日線上、出来高急増{ai_line}"
                 )
 
-                # 最大5社まで抽出
-                if len(buy_candidates) >= 5:
+                # 最大6社まで抽出
+                if len(buy_candidates) >= 6:
                     break
 
     # ── C. 保有株の出口監視 ──
@@ -282,12 +288,14 @@ def run_trading_bot():
 
         sign = "+" if diff >= 0 else ""
 
+        # 1. 損切り (-7.5%)
         if pnl_pct <= -7.5:
             hold_alerts.append(
                 f"🚨 {ticker} ({shares}株) 全売推奨\n"
                 f"・取得: ${cost} ({to_jpy_str(cost)}) ➔ 現在: ${value} ({to_jpy_str(value)})\n"
                 f"・損益: {sign}${diff} ({to_jpy_str(diff)}) [{sign}{pnl_pct}%]"
             )
+        # 2. 20日線割れの手仕舞い・利確
         elif close < sma20:
             action = "利確検討" if pnl_pct > 0 else "手仕舞い"
             hold_alerts.append(
